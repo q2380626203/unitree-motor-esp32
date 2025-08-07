@@ -4,8 +4,21 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "UNITREE_GO_MOTOR";
+
+// 打印原始数据包的辅助函数
+static void print_raw_packet(const char* label, const uint8_t* data, int length) {
+    printf("[%s] 原始数据包(%d字节): ", label, length);
+    for (int i = 0; i < length; i++) {
+        printf("%02X ", data[i]);
+        if ((i + 1) % 8 == 0 && i < length - 1) {
+            printf("\n[%s]                      ", label);
+        }
+    }
+    printf("\n");
+}
 
 esp_err_t unitree_motor_init(const unitree_motor_config_t *config)
 {
@@ -123,6 +136,9 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     cmd_packet[15] = (uint8_t)(crc & 0xFF);        // CRC低位
     cmd_packet[16] = (uint8_t)((crc >> 8) & 0xFF); // CRC高位
     
+    // 打印发送的命令数据包
+    print_raw_packet("发送CMD", cmd_packet, GO_M8010_6_CMD_LENGTH);
+    
     // ========== RS485半双工发送 ==========
     
     gpio_set_level(config->de_re_pin, 1); // 切换到发送模式
@@ -150,37 +166,67 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     
     int rx_len = uart_read_bytes(config->uart_port, rx_buffer, GO_M8010_6_DATA_LENGTH, pdMS_TO_TICKS(5));
     
+    // 打印接收到的原始数据包
+    if (rx_len > 0) {
+        print_raw_packet("接收DATA", rx_buffer, rx_len);
+    } else {
+        printf("[接收DATA] 未接收到数据 (长度: %d)\n", rx_len);
+    }
+    
     if (rx_len == GO_M8010_6_DATA_LENGTH && 
         rx_buffer[0] == GO_M8010_6_DATA_HEADER1 && 
         rx_buffer[1] == GO_M8010_6_DATA_HEADER2) {
         
         // ========== 解析反馈数据 ==========
         
+        // 打印详细解析过程
+        uint8_t motor_id = rx_buffer[2] & 0x0F;
+        uint8_t mode = (rx_buffer[2] >> 4) & 0x07;
+        
+        int16_t tau_raw = (int16_t)(rx_buffer[4] << 8) | rx_buffer[3];
+        float tau = (float)tau_raw / 256.0f;
+        
+        int16_t dq_raw = (int16_t)(rx_buffer[6] << 8) | rx_buffer[5];
+        float dq = (float)dq_raw * (6.28318f / 256.0f);
+        
+        int32_t q_raw = (int32_t)(rx_buffer[10] << 24) | (rx_buffer[9] << 16) | 
+                       (rx_buffer[8] << 8) | rx_buffer[7];
+        float q = (float)q_raw * (6.28318f / 32768.0f);
+        
+        int8_t temperature = (int8_t)rx_buffer[11];
+        uint8_t error = rx_buffer[12] & 0x07;
+        
+        printf("[解析结果] ID:%d, 模式:%d, 角度:%.3f rad, 角速度:%.2f rad/s, 力矩:%.3f N.m, 温度:%d°C, 错误:0x%02X\n",
+               motor_id, mode, q, dq, tau, temperature, error);
+        printf("[原始数值] tau_raw:%d, dq_raw:%d, q_raw:%" PRId32 "\n", tau_raw, dq_raw, q_raw);
+        
         if (data) {
-            data->motor_id = rx_buffer[2] & 0x0F;
-            data->mode = (rx_buffer[2] >> 4) & 0x07;
-            
-            // 解析反馈数据
-            int16_t tau_raw = (int16_t)(rx_buffer[4] << 8) | rx_buffer[3];
-            data->tau = (float)tau_raw / 256.0f;
-            
-            int16_t dq_raw = (int16_t)(rx_buffer[6] << 8) | rx_buffer[5];
-            data->dq = (float)dq_raw * (6.28318f / 256.0f);
-            
-            int32_t q_raw = (int32_t)(rx_buffer[10] << 24) | (rx_buffer[9] << 16) | 
-                           (rx_buffer[8] << 8) | rx_buffer[7];
-            data->q = (float)q_raw * (6.28318f / 32768.0f);
-            
-            data->temperature = (int8_t)rx_buffer[11];
-            data->error = rx_buffer[12] & 0x07;
+            data->motor_id = motor_id;
+            data->mode = mode;
+            data->tau = tau;
+            data->dq = dq;
+            data->q = q;
+            data->temperature = temperature;
+            data->error = error;
         }
         
         if (stats) stats->success_count++;
         return ESP_OK;
         
     } else {
-        // ESP_LOGW(TAG, "接收失败: %d字节, 数据: %02X %02X", rx_len, 
-        //          rx_len > 0 ? rx_buffer[0] : 0, rx_len > 1 ? rx_buffer[1] : 0);
+        printf("[接收失败] 长度:%d (期望:%d), 帧头: %02X %02X (期望: %02X %02X)\n", 
+               rx_len, GO_M8010_6_DATA_LENGTH,
+               rx_len > 0 ? rx_buffer[0] : 0, rx_len > 1 ? rx_buffer[1] : 0,
+               GO_M8010_6_DATA_HEADER1, GO_M8010_6_DATA_HEADER2);
+        
+        if (rx_len > 0) {
+            printf("[错误数据] ");
+            for (int i = 0; i < rx_len && i < 16; i++) {
+                printf("%02X ", rx_buffer[i]);
+            }
+            printf("\n");
+        }
+        
         if (stats) stats->error_count++;
         return ESP_FAIL;
     }
