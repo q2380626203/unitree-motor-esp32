@@ -38,7 +38,7 @@
 
 // Motor control parameters
 #define MOTOR_ID                0    // 电机ID (与原工作代码一致)
-#define CONTROL_FREQ_HZ         100  // 控制频率100Hz
+#define CONTROL_FREQ_HZ         1  // 控制频率1Hz
 #define CONTROL_PERIOD_MS       (1000 / CONTROL_FREQ_HZ)
 
 
@@ -59,7 +59,7 @@ static void motor_control_task(void *arg)
     
     ESP_LOGI(TAG, "引脚配置 - TX: GPIO%d, RX: GPIO%d, DE/RE: GPIO%d", 
              motor_config.tx_pin, motor_config.rx_pin, motor_config.de_re_pin);
-    ESP_LOGI(TAG, "波特率: %d, 控制频率: 100Hz", motor_config.baud_rate);
+    ESP_LOGI(TAG, "波特率: %d, 控制频率: %dHz", motor_config.baud_rate, CONTROL_FREQ_HZ);
 
     // 初始化电机通信
     esp_err_t ret = unitree_motor_init(&motor_config);
@@ -91,7 +91,7 @@ static void motor_control_task(void *arg)
         esp_err_t result = unitree_motor_send_recv(&motor_config, &motor_cmd, &motor_data, &motor_stats);
         
         // 状态显示
-        if (motor_stats.cmd_count % 50 == 0) { // 每500ms显示一次
+        if (motor_stats.cmd_count % 1 == 0) { // 每1秒显示一次
             ESP_LOGI(TAG, "========== 电机状态 #%lu ==========", motor_stats.cmd_count);
             ESP_LOGI(TAG, "控制指令: Kp=%.1f, Kd=%.1f, tau=%.3f, q=%.3f, dq=%.2f", 
                      motor_cmd.kp, motor_cmd.kd, motor_cmd.tau, motor_cmd.q, motor_cmd.dq);
@@ -110,7 +110,7 @@ static void motor_control_task(void *arg)
             ESP_LOGI(TAG, "=====================================");
         }
         
-        vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS)); // 100Hz控制频率
+        vTaskDelay(pdMS_TO_TICKS(CONTROL_PERIOD_MS)); // 1Hz控制频率
     }
     
     // 清理资源
