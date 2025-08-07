@@ -20,6 +20,16 @@ static void print_raw_packet(const char* label, const uint8_t* data, int length)
     printf("\n");
 }
 
+// 搜索帧头的辅助函数
+static int find_frame_header(const uint8_t* buffer, int buffer_len, uint8_t header1, uint8_t header2) {
+    for (int i = 0; i < buffer_len - 1; i++) {
+        if (buffer[i] == header1 && buffer[i + 1] == header2) {
+            return i;  // 返回帧头位置
+        }
+    }
+    return -1;  // 未找到帧头
+}
+
 esp_err_t unitree_motor_init(const unitree_motor_config_t *config)
 {
     if (!config) {
@@ -145,8 +155,9 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     vTaskDelay(pdMS_TO_TICKS(1)); // 短暂延时确保切换完成
     
     int tx_len = uart_write_bytes(config->uart_port, cmd_packet, GO_M8010_6_CMD_LENGTH);
-    uart_wait_tx_done(config->uart_port, pdMS_TO_TICKS(10)); // 等待发送完成
+    uart_wait_tx_done(config->uart_port, pdMS_TO_TICKS(20)); // 增加等待发送完成时间
     
+    vTaskDelay(pdMS_TO_TICKS(1)); // 额外延时确保数据完全发送
     gpio_set_level(config->de_re_pin, 0); // 切换到接收模式
     
     // 更新统计信息
@@ -162,20 +173,32 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     
     // ========== 接收反馈 ==========
     
-    vTaskDelay(pdMS_TO_TICKS(1)); // 等待电机响应
+    // 清空UART接收缓冲区，避免残留数据干扰
+    uart_flush_input(config->uart_port);
     
-    int rx_len = uart_read_bytes(config->uart_port, rx_buffer, GO_M8010_6_DATA_LENGTH, pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(2)); // 增加等待时间，确保电机响应完成
+    
+    // 读取更多数据用于帧头搜索
+    uint8_t extended_buffer[32];
+    int rx_len = uart_read_bytes(config->uart_port, extended_buffer, sizeof(extended_buffer), pdMS_TO_TICKS(10));
     
     // 打印接收到的原始数据包
     if (rx_len > 0) {
-        print_raw_packet("接收DATA", rx_buffer, rx_len);
+        print_raw_packet("接收DATA", extended_buffer, rx_len);
     } else {
         printf("[接收DATA] 未接收到数据 (长度: %d)\n", rx_len);
     }
     
-    if (rx_len == GO_M8010_6_DATA_LENGTH && 
-        rx_buffer[0] == GO_M8010_6_DATA_HEADER1 && 
-        rx_buffer[1] == GO_M8010_6_DATA_HEADER2) {
+    // 搜索正确的帧头
+    int header_pos = find_frame_header(extended_buffer, rx_len, GO_M8010_6_DATA_HEADER1, GO_M8010_6_DATA_HEADER2);
+    
+    if (header_pos >= 0 && (header_pos + GO_M8010_6_DATA_LENGTH <= rx_len)) {
+        // 找到帧头，复制正确的数据包
+        memcpy(rx_buffer, extended_buffer + header_pos, GO_M8010_6_DATA_LENGTH);
+        
+        if (header_pos > 0) {
+            printf("[帧同步] 在位置%d找到帧头，跳过%d字节垃圾数据\n", header_pos, header_pos);
+        }
         
         // ========== 解析反馈数据 ==========
         
