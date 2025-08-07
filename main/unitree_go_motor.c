@@ -151,6 +151,9 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     
     // ========== RS485半双工发送 ==========
     
+    // 发送前清空接收缓冲区，避免旧数据干扰
+    uart_flush_input(config->uart_port);
+    
     gpio_set_level(config->de_re_pin, 1); // 切换到发送模式
     vTaskDelay(pdMS_TO_TICKS(1)); // 短暂延时确保切换完成
     
@@ -173,10 +176,7 @@ esp_err_t unitree_motor_send_recv(const unitree_motor_config_t *config,
     
     // ========== 接收反馈 ==========
     
-    // 清空UART接收缓冲区，避免残留数据干扰
-    uart_flush_input(config->uart_port);
-    
-    vTaskDelay(pdMS_TO_TICKS(2)); // 增加等待时间，确保电机响应完成
+    vTaskDelay(pdMS_TO_TICKS(2)); // 等待电机响应（不要清空缓冲区！）
     
     // 读取更多数据用于帧头搜索
     uint8_t extended_buffer[32];
